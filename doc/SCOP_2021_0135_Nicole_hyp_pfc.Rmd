@@ -1,0 +1,592 @@
+---
+title: "SCOP_2021_0135 Hypothalamus Frontal Cortex Combined analysis"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    code_folding: hide
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+``` {r preamble, message = FALSE}
+library("cbmr")
+library("limma")
+library("edgeR")
+library("ggplot2")
+library("data.table")
+library("stringr")
+library("clipr")
+library("org.Mm.eg.db")
+library("clusterProfiler")
+library("pheatmap")
+library("RColorBrewer")
+
+load(here::here("data/hyp_pfc.rda"))
+counts <- hyp_pfc$counts
+metadata <- hyp_pfc$metadata
+```
+## Introduction
+Assessing transcriptomic changes following a single administration of psilocybin.
+Mice in 4 groups - acutely treated with psilocybin vs. vehicle (6 hours), and
+long-term group (sacrificed 4 weeks after administration of compound).
+
+In the metadata the short term effect is written as "3 hours post-injection" and
+"4 weeks post-injection", for ease of coding the time points are renamed to
+6hours and 4weeks.
+
+```{r}
+metadata[, `Condition 2`:=fifelse(`Condition 2` == "4 weeks post-injection",
+                                  "4weeks", "3hours")]
+```
+
+Two tissues are investigated, Hypothalamus and Frontal Cortex (PFC).
+
+## Initial assesment of data quality
+From the multiQC report generated as part of the alignment and feature counting,
+we know that the samples have a very consistent alignment and assignment rate,
+but that one sample from each tissue (sample A2 and B6) have almost no
+reads. In general the number of reads in each sample is fine. Few samples have a
+somewhat higher proportion of multi-mapping reads than the remaining samples.
+The two sample with very few reads will be excluded as 200.000 reads is not
+enough to test for differential expression.
+
+
+```{r density_and_md, echo = TRUE, message = FALSE, results='hide'}
+y <- prepare_rna_dgelist(counts, metadata, sample_col = "Sample ID (Library ID)")
+rownames(y) <- str_remove(y$genes$Geneid, "\\.[[:digit:]]+$")
+
+# Density and MD plots are saved to an external file. The filtered
+# ones are the more relevant ones.
+
+y <- y[, !(y$samples$Sample.ID..Library.ID. %in% c("0135A_2", "0135B_6"))]
+
+y$samples$group <- factor(paste0(y$samples$Condition.1, "_",
+                                 y$samples$Condition.2
+))
+
+design <- model.matrix(~ 0 + group:tissue, data = y$samples)
+
+idx_expressed <- filterByExpr(y, design = design)
+y <- y[idx_expressed, ]
+
+p2 <- plot_density(y)
+pdf(here::here("doc/all_filtered_plots.pdf"))
+p2
+plot_all_md(y)
+dev.off()
+```
+
+The samples follow the same distribution of reads.
+
+### Visalization of all samples
+Next we visualize the distribution of the individual samples as both a number of
+multidimensional scaling (MDS) plots:
+
+``` {r mds_and_heatmap}
+colour_scale <- scale_color_manual(name = NULL,
+                                   values = c("Saline_3hours" = "#a6cee3",
+                                              "Psilocybin_3hours" = "#1f78b4",
+                                              "Saline_4weeks" = "#b2df8a",
+                                              "Psilocybin_4weeks" = "#33a02c"),
+                                   labels = c("Saline_3hours" = "Saline, 3 hours",
+                                              "Psilocybin_3hours" = "Psilocybin, 3 hours",
+                                              "Saline_4weeks" = "Saline, 4 weeks",
+                                              "Psilocybin_4weeks" = "Psilocybin, 4 weeks")
+)
+
+p <- ggplot_mds(y, dim_plot = c(1, 2),
+                colour_by = "tissue"
+)
+p
+```
+
+It is obvious that the major difference between samples is due to tissue
+differences, this is not surprising and we instead visualize the tissues
+separately.
+
+### Visalization and investigation of potential outliers in Hypothalamus
+
+```{r}
+ggplot_mds(y[, y$samples$tissue == "Hypothalamus"], dim_plot = c(1, 2),
+           colour_by = "group",
+           col_scale = colour_scale) +
+  geom_label(aes(label = `Sample.ID..Library.ID.`)) +
+  ggtitle("Hypothalamus")
+```
+
+We see that the major variation in Hypothalamus is due to small number of
+samples, the differential expression analysis is robust to outliers and we will
+investigate these samples individually later. For now we exclude the three most 
+outlying samples for the purpose of plotting.
+
+``` {r}
+excluded_samples <- c("0135A_21", "0135A_1", "0135A_9")
+idx_hyp <- y$samples$tissue == "Hypothalamus"
+idx_included <- !(y$samples$Sample.ID..Library.ID. %in% excluded_samples)
+ggplot_mds(y[, idx_hyp & idx_included], dim_plot = c(1, 2),
+           colour_by = "group",
+           col_scale = colour_scale) +
+  geom_label(aes(label = `Sample.ID..Library.ID.`))
+```
+
+We still see a number of samples separate from the main bulk on the first 
+dimension. The sample to sample variation seems to be the largest source of 
+variation in the dataset. On the second dimension we see a slight separation 
+into two groups, but not caused by the experimental treatments.
+
+The samples were extracted in two batches. We colour by batch.
+
+``` {r}
+ggplot_mds(y[, idx_hyp & idx_included], dim_plot = c(1, 2),
+           colour_by = "Extraction.pool..A.B.C.")
+```
+
+There is a clear separation by extraction pool. We correct for this and plot again.
+``` {r}
+y_hyp <- y[, idx_hyp & idx_included]
+design_hyp <- model.matrix(~ 0 + group, data = y_hyp$samples)
+
+cpm_hyp <- cpm(y_hyp, log = TRUE)
+cpm_hyp <- removeBatchEffect(cpm_hyp, 
+                             batch = y_hyp$samples$Extraction.pool..A.B.C.,
+                             design = design_hyp)
+
+ggplot_mds(cpm_hyp,
+           dim_plot = c(1, 2),
+           colour_by = y_hyp$samples$group,
+           col_scale = colour_scale)
+
+ggplot_mds(cpm_hyp,
+           dim_plot = c(2, 3),
+           colour_by = y_hyp$samples$group,
+           col_scale = colour_scale)
+
+ggplot_mds(cpm_hyp,
+           dim_plot = c(3, 4),
+           colour_by = y_hyp$samples$group,
+           col_scale = colour_scale)
+```
+
+The largest source of variation is still individual samples, but in the higher 
+dimensions some separation between the 3 hours and 4 weeks time point is observed.
+
+The outlying samples are sample 0135A_21, which is located on it own, 0135A_9
+and 0135A_1 which cluster together, but far from all other samples and finally
+0135A_17, 0135A_8, 0135A_10 which cluster together in the same direction on
+dimension 1 as 0135A_9 and 0135A_1. We investigate which genes are different in
+these samples compared to the rest.
+
+``` {r}
+hypothalamus <- y[, y$samples$tissue == "Hypothalamus"]
+
+sample21 <- cpmByGroup(hypothalamus, group = hypothalamus$samples$Sample.ID..Library.ID. == "0135A_21", log = TRUE)
+sample_order <- order(abs(sample21[, "TRUE"] - sample21[, "FALSE"]), decreasing = TRUE)
+#write_clip(rownames(sample21)[sample_order])
+
+
+samples9_and_1 <- cpmByGroup(hypothalamus, group = hypothalamus$samples$Sample.ID..Library.ID. %in% 
+                               c("0135A_9", "0135A_1"), log = TRUE)
+sample_order <- order(abs(samples9_and_1[, "TRUE"] - samples9_and_1[, "FALSE"]), decreasing = TRUE)
+#write_clip(rownames(samples9_and_1)[sample_order])
+
+
+samples9_1_17_8_10 <- cpmByGroup(hypothalamus, group = hypothalamus$samples$Sample.ID..Library.ID. %in% 
+                                   c("0135A_9", "0135A_1", "0135A_17", "0135A_8", "0135A_10"), log = TRUE)
+sample_order <- order(abs(samples9_1_17_8_10[, "TRUE"] - samples9_1_17_8_10[, "FALSE"]), decreasing = TRUE)
+#write_clip(rownames(samples9_1_17_8_10)[sample_order])
+
+out <- data.table(
+  Sample21 = sample21[, "FALSE"] - sample21[, "TRUE"],
+  Samples9_and_1 = samples9_and_1[, "FALSE"] - samples9_and_1[, "TRUE"],
+  Samples9_1_17_8_10 = samples9_1_17_8_10[, "FALSE"] - samples9_1_17_8_10[, "TRUE"],
+  ENSEMBL = rownames(hypothalamus)
+)
+
+conv <- bitr(out$ENSEMBL, "ENSEMBL", c("SYMBOL", "GENENAME"), org.Mm.eg.db)
+setDT(conv, key = "ENSEMBL")
+conv <- conv[out$ENSEMBL, , mult = "first"]
+out <- merge(out, conv, by = "ENSEMBL")
+
+writexl::write_xlsx(out, path = here::here("doc/hypothalamus_outliers.xlsx"))
+```
+
+The outlying samples are enriched for a long list of terms, these terms vary 
+between the three groups investigated but are heavily enriched for terms related
+to wound healing and immune system. Sample 21 has `r format(round(out[, mean(abs(Sample21) > 1) * 100], 2), nsmall = 2)`% 
+of genes being up or down more than two fold, and is excluded since it seems
+to be an entirely different sample than the rest. The remaining samples have
+`r format(round(out[, mean(abs(Samples9_and_1) > 1) * 100], 2), nsmall = 2)`% and
+`r format(round(out[, mean(abs(Samples9_1_17_8_10) > 1) * 100], 2), nsmall = 2)`%
+samples up or down by more than two fold and are retained.
+
+### Visalization and investigation of potential outliers in PFC
+```{r}
+ggplot_mds(y[, y$samples$tissue == "PFC"], dim_plot = c(1, 2),
+           colour_by = "group",
+           col_scale = colour_scale) +
+  geom_label(aes(label = `Sample.ID..Library.ID.`))
+```
+
+We see that the major variation in PFC is again due to small number of
+samples, as before we will investigate these samples individually later. 
+For now we exclude the three most outlying samples to look for other groupings.
+
+``` {r}
+excluded_samples <- c("0135B_28", "0135B_25", "0135B_30")
+idx_pfc <- y$samples$tissue == "PFC"
+idx_included <- !(y$samples$Sample.ID..Library.ID. %in% excluded_samples)
+
+ggplot_mds(y[, idx_pfc & idx_included], dim_plot = c(1, 2),
+           colour_by = "group",
+           col_scale = colour_scale)
+```
+
+The remaining samples look fairly homogeneous, with a clear separation between
+the 3 hours and 4 weeks time point. We try colouring by extraction pool, as we 
+saw an effect in hypothalamus.
+
+``` {r}
+ggplot_mds(y[, idx_pfc & idx_included], dim_plot = c(1, 2),
+           colour_by = "Extraction.pool..A.B.C.")
+```
+
+Extraction pool separates the samples on the x-axis.
+
+``` {r}
+y_pfc <- y[, idx_pfc & idx_included]
+design_pfc <- model.matrix(~ 0 + group, data = y_pfc$samples)
+
+cpm_pfc <- cpm(y_pfc, log = TRUE)
+cpm_pfc <- removeBatchEffect(cpm_pfc, 
+                             batch = y_pfc$samples$Extraction.pool..A.B.C.,
+                             design = design_pfc)
+
+ggplot_mds(cpm_pfc, dim_plot = c(1, 2),
+           colour_by = y_pfc$samples$group,
+           col_scale = colour_scale)
+
+ggplot_mds(cpm_pfc, dim_plot = c(1, 3),
+           colour_by = y_pfc$samples$group,
+           col_scale = colour_scale)
+
+```
+
+We still see a separation between the 3 hours and 4 weeks time point, but no big 
+difference between saline and psilocybin.
+
+The outlying samples are sample 0135B_28, 0135B_25, 0135B_30 but far from all
+other samples in the same direction on dimension 1.
+We investigate which genes are different in these samples compared to the rest.
+
+``` {r}
+pfc <- y[, y$samples$tissue == "PFC"]
+
+sample28_25_30 <- cpmByGroup(pfc, group = pfc$samples$Sample.ID..Library.ID. %in% c("0135B_28", "0135B_25", "0135B_30"), log = TRUE)
+sample_order <- order(abs(sample28_25_30[, "TRUE"] - sample28_25_30[, "FALSE"]), decreasing = TRUE)
+#write_clip(rownames(sample28_25_30)[sample_order])
+
+out <- data.table(
+  Sample28_25_30 = sample28_25_30[, "FALSE"] - sample28_25_30[, "TRUE"],
+  ENSEMBL = rownames(hypothalamus)
+)
+out <- merge(out, conv, by = "ENSEMBL")
+
+writexl::write_xlsx(out, path = here::here("doc/pfc_outliers.xlsx"))
+```
+
+The outlying samples are again enriched for a long list of terms heavily 
+enriched for terms related to wound healing and immune system. We retain these
+samples as they only have `r format(round(out[, mean(abs(Sample28_25_30) > 1) * 100], 2), nsmall = 2)`%
+of genes with a fold change greater than two.
+
+### Final RNA pre processing
+
+Due to the large variation in sample quality, and the fact that all cages are not
+present in all samples, we will use voom to analyse this data.
+
+The cage information did not add to the the model (not shown here) and were thus
+not included in the final model.
+
+``` {r}
+y <- prepare_rna_dgelist(counts, metadata, sample_col = "Sample ID (Library ID)")
+y$genes$Geneid <- str_remove(y$genes$Geneid, "\\.[[:digit:]]+$")
+rownames(y) <- y$genes$Geneid
+colnames(y$samples)[colnames(y$samples) == "Extraction.pool..A.B.C."] <- "Extraction_pool"
+colnames(y$samples)[colnames(y$samples) == "Cage....1.2.3."] <- "Cage"
+y$samples$Cage <- as.factor(y$samples$Cage)
+
+y$samples$group <- factor(paste0(y$samples$tissue, "_",
+                                 y$samples$Condition.1, "_",
+                                 y$samples$Condition.2
+))
+
+y <- y[, !(y$samples$Sample.ID..Library.ID. %in% c("0135A_2", "0135A_21", "0135B_6"))]
+
+conv <- bitr(rownames(y$genes), fromType = "ENSEMBL",
+             toType = c("SYMBOL", "GENENAME"), OrgDb = org.Mm.eg.db)
+setDT(conv, key = "ENSEMBL")
+conv <- conv[y$genes$Geneid, , mult = "first"]
+
+y$genes <- merge(y$genes, conv, by.x = "Geneid", by.y = "ENSEMBL")
+stopifnot(all(y$genes$Geneid == rownames(y)))
+
+Hypothalamus_ExtractionB <- y$samples$Extraction_pool == "B"
+PFC_ExtractionB <- y$samples$Extraction_pool == "D"
+
+design <- model.matrix(~ 0 + group, data = y$samples)
+design <- cbind(design, Hypothalamus_ExtractionB, PFC_ExtractionB)
+
+
+idx_expressed <- filterByExpr(y, design = design)
+y <- y[idx_expressed, ]
+
+y <- calcNormFactors(y)
+y <- estimateDisp(y, design = design)
+
+v <- voomWithQualityWeights(y, design = design, plot = FALSE)
+corfit <- duplicateCorrelation(v, design, block = v$targets$Animal.ID)
+v <- voomWithQualityWeights(y, design, block = v$targets$Animal.ID,
+                            correlation = corfit$consensus, plot = TRUE)
+fit <- lmFit(v, design = v$design)
+```
+
+We check the weight of the samples identified as potentially problematic.
+
+``` {r}
+problem_samples <- c("0135A_9", "0135A_1", "0135A_17", "0135A_8", "0135A_10", "0135B_28", "0135B_25", "0135B_30")
+pD <- data.frame(weight = v$targets$sample.weights, 
+           type = fifelse(v$targets$Sample.ID..Library.ID. %in% problem_samples, "Potential\noutlier", "Normal"),
+           name = v$targets$Sample.ID..Library.ID.)
+
+ggplot(pD, aes(x = type, y = weight)) +
+  geom_point() +
+  scale_y_log10()
+```
+
+The model generally downweighs the samples we identified but also seems to 
+downweigh a number of samples we did not identify.
+
+## Differential expression
+Next we check that the batches we have added are significant, and that they
+all follow either a uniform distribution or have an increased number of low
+P-values.
+
+```{r}
+fit_initial <- eBayes(fit)
+
+withr::with_par(list(mfrow = c(2,1)),
+                {
+                  hist(fit_initial$p.value[, "Hypothalamus_ExtractionB"], main = "Hypothalamus Extraction pool B", xlab = "P-Value")
+                  hist(fit_initial$p.value[, "PFC_ExtractionB"], main = "PFC Extraction pool B", xlab = "P-Value")
+                })
+```
+
+The two extraction pools are highly highly enriched for genes with low P-values.
+Next we fit the contrasts of interests, and visualize the distribution of P-values.
+
+``` {r}
+contrast_matrix <- makeContrasts(
+  Hyp_Psilocybin_effect_at_3hours = (groupHypothalamus_Saline_3hours - groupHypothalamus_Psilocybin_3hours),
+  Hyp_Psilocybin_effect_at_4weeks = (groupHypothalamus_Saline_4weeks - groupHypothalamus_Psilocybin_4weeks),
+  Hyp_time_effect_in_saline = (groupHypothalamus_Saline_4weeks - groupHypothalamus_Saline_3hours),
+  Hyp_time_effect_in_psilocybin = (groupHypothalamus_Psilocybin_4weeks - groupHypothalamus_Psilocybin_3hours),
+  Hyp_Interaction = (groupHypothalamus_Saline_4weeks - groupHypothalamus_Psilocybin_4weeks) - 
+    (groupHypothalamus_Saline_3hours - groupHypothalamus_Psilocybin_3hours),
+  PFC_Psilocybin_effect_at_3hours = (groupPFC_Saline_3hours - groupPFC_Psilocybin_3hours),
+  PFC_Psilocybin_effect_at_4weeks = (groupPFC_Saline_4weeks - groupPFC_Psilocybin_4weeks),
+  PFC_time_effect_in_saline = (groupPFC_Saline_4weeks - groupPFC_Saline_3hours),
+  PFC_time_effect_in_psilocybin = (groupPFC_Psilocybin_4weeks - groupPFC_Psilocybin_3hours),
+  PFC_Interaction = (groupPFC_Saline_4weeks - groupPFC_Psilocybin_4weeks) - 
+    (groupPFC_Saline_3hours - groupPFC_Psilocybin_3hours),
+  levels = v$design
+)
+
+fit2 <- contrasts.fit(fit, contrast_matrix)
+fit2 <- eBayes(fit2)
+```
+
+## Histogram of P-values
+
+### Psilocybin and time in hypothalamus
+
+``` {r}
+withr::with_par(list(mfrow = c(2,2)),
+                {
+                  hist(fit2$p.value[, "Hyp_Psilocybin_effect_at_3hours"], 
+                       main = "Psilocybin vs Saline, 3 hours", xlab = "P-Value")
+                  hist(fit2$p.value[, "Hyp_Psilocybin_effect_at_4weeks"], 
+                       main = "Psilocybin vs Saline, 4 weeks", xlab = "P-Value")
+                  hist(fit2$p.value[, "Hyp_time_effect_in_saline"], 
+                       main = "4 Weeks vs 3 hours, Saline", xlab = "P-Value")
+                  hist(fit2$p.value[, "Hyp_time_effect_in_psilocybin"], 
+                       main = "4 Weeks vs 3 hours, Psilocybin", xlab = "P-Value")
+                })
+```
+
+In hypothalamus a clear effect of time is observed, while the effect of 
+Psilocybin shows little evidence of significant effects at any timepoint.
+
+### Psilocybin and time in PFC
+
+``` {r}
+withr::with_par(list(mfrow = c(2,2)),
+                {
+                  hist(fit2$p.value[, "PFC_Psilocybin_effect_at_3hours"], 
+                       main = "Psilocybin vs Saline, 3 hours", xlab = "P-Value")
+                  hist(fit2$p.value[, "PFC_Psilocybin_effect_at_4weeks"], 
+                       main = "Psilocybin vs Saline, 4 weeks", xlab = "P-Value")
+                  hist(fit2$p.value[, "PFC_time_effect_in_saline"], 
+                       main = "4 Weeks vs 3 hours, Saline", xlab = "P-Value")
+                  hist(fit2$p.value[, "PFC_time_effect_in_psilocybin"], 
+                       main = "4 Weeks vs 3 hours, Psilocybin", xlab = "P-Value")
+                })
+```
+
+In PFC a clear effect of time is observed, and a strong enrichment of low 
+P-values in Psilocybin treatment at 3 hours, but little evidence of significant 
+effects at 4 weeks.
+
+### Interaction 
+
+``` {r}
+withr::with_par(list(mfrow = c(1,2)),
+                {
+                  hist(fit2$p.value[, "Hyp_Interaction"], 
+                       main = "Hypothalamus interaction", xlab = "P-Value")
+                  hist(fit2$p.value[, "PFC_Interaction"], 
+                       main = "PFC interaction", xlab = "P-Value")
+                })
+```
+
+As expected an enrichment of low P-values is observed in the PFC interaction is
+observed.
+
+We save the differential expression results in an excel file.
+
+``` {r}
+contrasts <- colnames(contrast_matrix)
+names(contrasts) <- contrasts
+dge_res <- lapply(contrasts, topTable, fit = fit2, number = Inf, p.value = 1)
+names(dge_res) <- str_remove(names(dge_res), "othalamus")
+
+writexl::write_xlsx(dge_res, path = here::here("doc/0135_Nicole_dge_results.xlsx"))
+```
+
+## Gene ontology analysis
+We test gene ontologies of the differential expression results. These
+are also saved to a excel file.
+
+``` {r ontologies, cache=FALSE, message=FALSE, results='hide'}
+terms <- get_enrichment_terms(org.Mm.eg.db, v$genes$Geneid, min_genes = 5, max_genes = 500)
+
+ontologies <- lapply(terms, run_ontology_tests,
+                     y = v,
+                     contrast_matrix = contrast_matrix,
+                     fun = limma::camera)
+
+writexl::write_xlsx(ontologies$BP, path = here::here("doc/0135_Nicole_ontologies_BP.xlsx"))
+writexl::write_xlsx(ontologies$MF, path = here::here("doc/0135_Nicole_ontologies_MF.xlsx"))
+writexl::write_xlsx(ontologies$CC, path = here::here("doc/0135_Nicole_ontologies_CC.xlsx"))
+writexl::write_xlsx(ontologies$Reactome, path = here::here("doc/0135_Nicole_ontologies_Reactome.xlsx"))
+```
+
+## Volcanoplots
+
+Next we generate volcano plots. We make sure the logFC limits are the same across
+all plots.
+
+```{r}
+source("~/scripts/plotting/findPvalueCutoff.R")
+
+allLogFc <- unlist(lapply(dge_res, \(x) x[["logFC"]]))
+minLogFc <- min(allLogFc)
+maxLogFc <- max(allLogFc)
+minPval <- -log10(lapply(dge_res, \(x) x[["P.Value"]]) |> unlist() |> min())
+maxPval <- 0
+
+plot_fn <- function(pD){
+  ggplot(pD, aes(x = logFC, 
+                 y = -log10(P.Value), 
+                 #colour = abs(logFC) > 1 & adj.P.Val < 0.05
+                 colour = adj.P.Val < 0.05
+                 )
+         ) + 
+    geom_point() +
+#    geom_vline(xintercept = 1, linetype = 2, colour = 'darkgrey') +
+#    geom_vline(xintercept = -1, linetype = 2, colour = 'darkgrey') +
+    geom_hline(yintercept = -log10(findPvalueCutoff(pD$P.Value)), linetype = 2, colour = 'darkgrey') +
+    scale_color_manual(values = c("TRUE" = "red", "FALSE" = "black"), name = element_blank(), labels = c("TRUE" = "Significant", "FALSE" = "Non-significant"), breaks = c("TRUE", "FALSE")) +
+    ylab(expression(paste(-log[10], "(P-value)"))) +
+    xlab(expression(paste(log[2], "(Fold Change)"))) +
+    scale_x_continuous(limits = c(minLogFc, maxLogFc)) +
+    scale_y_continuous(limits = c(maxPval, minPval)) +
+    guides(colour = FALSE) +
+    theme_bw()
+}
+
+plot_fn(dge_res$Hyp_Psilocybin_effect_at_3hours) + ggtitle("Hypothalamus, Psilocybin effect at 3 hours")
+plot_fn(dge_res$Hyp_Psilocybin_effect_at_4weeks) + ggtitle("Hypothalamus, Psilocybin effect at 4 weeks")
+plot_fn(dge_res$Hyp_time_effect_in_saline) + ggtitle("Hypothalamus, time effect in saline")
+plot_fn(dge_res$Hyp_time_effect_in_psilocybin) + ggtitle("Hypothalamus, time effect in_psilocybin")
+plot_fn(dge_res$Hyp_Interaction) + ggtitle("Hypothalamus Interaction")
+plot_fn(dge_res$PFC_Psilocybin_effect_at_3hours) + ggtitle("PFC, Psilocybin effect at 3 hours")
+plot_fn(dge_res$PFC_Psilocybin_effect_at_4weeks) + ggtitle("PFC, Psilocybin effect at 4 weeks")
+plot_fn(dge_res$PFC_time_effect_in_saline) + ggtitle("PFC, time effect in saline")
+plot_fn(dge_res$PFC_time_effect_in_psilocybin) + ggtitle("PFC, time effect in psilocybin")
+plot_fn(dge_res$PFC_Interaction) + ggtitle("PFC Interaction")
+```
+
+## Heatmaps
+
+Next we generate heatmaps of the tissue specific gene expressions. Samples and
+genes are clustered based on their correlation. The genes are normalized to have
+mean 0 and SD 1 prior to plotting, to make comparisons between genes with different
+expression levels possible. The colour scale is capped, so all genes with a score
+of less than -2 or greater than +2 are given the colour of -2 and +2 respectively.
+
+```{r}
+heatmap_fn <- function(pD, main) {
+  cor_dist_row <- as.dist(sqrt(1/2 * (1 - cor(t(pD)))))
+  cor_dist_col <- as.dist(sqrt(1/2 * (1 - cor(pD))))
+  
+  annot_col <- y$samples[colnames(pD), c("Condition.1", "Condition.2"), drop = FALSE]
+  
+  colours <- colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(100)
+  colours <- c(colours[[1]], colours, colours[[length(colours)]])
+  breaks <- c(-Inf, seq(-2, 2, length.out = 101), Inf)
+  
+  pheatmap(pD, clustering_method = "ward.D2", 
+           clustering_distance_rows = cor_dist_row, 
+           clustering_distance_cols = cor_dist_col, 
+           scale = "row", show_rownames = FALSE, 
+           annotation_col = annot_col, color = colours, breaks = breaks, 
+           main = main)
+}
+
+pD <- cpm(y, log = TRUE)
+pD <- removeBatchEffect(pD, covariates = y$design[, 9:10], design = y$design[, 1:8])
+
+heatmap_fn(pD[, str_detect(colnames(pD), "A")], "Hypothalamus")
+heatmap_fn(pD[, str_detect(colnames(pD), "B")], "PFC")
+
+```
+
+We also plot only the genes significantly affected by Psilocybin at 3 hours in PFC and
+the top 100 genes for the treatment of Psilocybin at 3 hours in Hypothalamus.
+
+``` {r}
+
+idx_signif <- dge_res$PFC_Psilocybin_effect_at_3hours$adj.P.Val < 0.05
+idx_signif <- dge_res$PFC_Psilocybin_effect_at_3hours$Geneid[idx_signif]
+heatmap_fn(pD[idx_signif, str_detect(colnames(pD), "B")], main = "Significant in PFC")
+
+idx_signif <- dge_res$Hyp_Psilocybin_effect_at_3hours$Geneid[1:100]
+heatmap_fn(pD[idx_signif, str_detect(colnames(pD), "A")], main = "Top 100 in Hypothalamus")
+```
+
