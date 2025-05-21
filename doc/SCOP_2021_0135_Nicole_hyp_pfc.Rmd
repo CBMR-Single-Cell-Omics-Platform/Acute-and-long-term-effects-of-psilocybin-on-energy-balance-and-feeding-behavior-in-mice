@@ -38,7 +38,7 @@ long-term group (sacrificed 4 weeks after administration of compound).
 
 In the metadata the short term effect is written as "3 hours post-injection" and
 "4 weeks post-injection", for ease of coding the time points are renamed to
-6hours and 4weeks.
+3hours and 4weeks.
 
 ```{r}
 metadata[, `Condition 2`:=fifelse(`Condition 2` == "4 weeks post-injection",
@@ -114,9 +114,9 @@ separately.
 
 ```{r}
 ggplot_mds(y[, y$samples$tissue == "Hypothalamus"], dim_plot = c(1, 2),
-           colour_by = "group",
-           col_scale = colour_scale) +
-  geom_label(aes(label = `Sample.ID..Library.ID.`)) +
+           colour_by = "group"
+           ) +
+  colour_scale +
   ggtitle("Hypothalamus")
 ```
 
@@ -130,9 +130,8 @@ excluded_samples <- c("0135A_21", "0135A_1", "0135A_9")
 idx_hyp <- y$samples$tissue == "Hypothalamus"
 idx_included <- !(y$samples$Sample.ID..Library.ID. %in% excluded_samples)
 ggplot_mds(y[, idx_hyp & idx_included], dim_plot = c(1, 2),
-           colour_by = "group",
-           col_scale = colour_scale) +
-  geom_label(aes(label = `Sample.ID..Library.ID.`))
+           colour_by = "group") +
+           colour_scale
 ```
 
 We still see a number of samples separate from the main bulk on the first 
@@ -159,18 +158,21 @@ cpm_hyp <- removeBatchEffect(cpm_hyp,
 
 ggplot_mds(cpm_hyp,
            dim_plot = c(1, 2),
-           colour_by = y_hyp$samples$group,
-           col_scale = colour_scale)
+           colour_by = y_hyp$samples$group
+           ) +
+  colour_scale
 
 ggplot_mds(cpm_hyp,
            dim_plot = c(2, 3),
-           colour_by = y_hyp$samples$group,
-           col_scale = colour_scale)
+           colour_by = y_hyp$samples$group
+           ) +
+  colour_scale
 
 ggplot_mds(cpm_hyp,
            dim_plot = c(3, 4),
-           colour_by = y_hyp$samples$group,
-           col_scale = colour_scale)
+           colour_by = y_hyp$samples$group
+           ) +
+  colour_scale
 ```
 
 The largest source of variation is still individual samples, but in the higher 
@@ -228,9 +230,9 @@ samples up or down by more than two fold and are retained.
 ### Visalization and investigation of potential outliers in PFC
 ```{r}
 ggplot_mds(y[, y$samples$tissue == "PFC"], dim_plot = c(1, 2),
-           colour_by = "group",
-           col_scale = colour_scale) +
-  geom_label(aes(label = `Sample.ID..Library.ID.`))
+           colour_by = "group"
+           ) +
+  colour_scale
 ```
 
 We see that the major variation in PFC is again due to small number of
@@ -243,8 +245,8 @@ idx_pfc <- y$samples$tissue == "PFC"
 idx_included <- !(y$samples$Sample.ID..Library.ID. %in% excluded_samples)
 
 ggplot_mds(y[, idx_pfc & idx_included], dim_plot = c(1, 2),
-           colour_by = "group",
-           col_scale = colour_scale)
+           colour_by = "group") +
+           colour_scale
 ```
 
 The remaining samples look fairly homogeneous, with a clear separation between
@@ -268,12 +270,14 @@ cpm_pfc <- removeBatchEffect(cpm_pfc,
                              design = design_pfc)
 
 ggplot_mds(cpm_pfc, dim_plot = c(1, 2),
-           colour_by = y_pfc$samples$group,
-           col_scale = colour_scale)
+           colour_by = y_pfc$samples$group
+           ) +
+  colour_scale
 
 ggplot_mds(cpm_pfc, dim_plot = c(1, 3),
-           colour_by = y_pfc$samples$group,
-           col_scale = colour_scale)
+           colour_by = y_pfc$samples$group
+           ) +
+           colour_scale
 
 ```
 
@@ -392,18 +396,18 @@ Next we fit the contrasts of interests, and visualize the distribution of P-valu
 
 ``` {r}
 contrast_matrix <- makeContrasts(
-  Hyp_Psilocybin_effect_at_3hours = (groupHypothalamus_Saline_3hours - groupHypothalamus_Psilocybin_3hours),
-  Hyp_Psilocybin_effect_at_4weeks = (groupHypothalamus_Saline_4weeks - groupHypothalamus_Psilocybin_4weeks),
+  Hyp_Psilocybin_effect_at_3hours = (groupHypothalamus_Psilocybin_3hours - groupHypothalamus_Saline_3hours),
+  Hyp_Psilocybin_effect_at_4weeks = (groupHypothalamus_Psilocybin_4weeks - groupHypothalamus_Saline_4weeks),
   Hyp_time_effect_in_saline = (groupHypothalamus_Saline_4weeks - groupHypothalamus_Saline_3hours),
   Hyp_time_effect_in_psilocybin = (groupHypothalamus_Psilocybin_4weeks - groupHypothalamus_Psilocybin_3hours),
-  Hyp_Interaction = (groupHypothalamus_Saline_4weeks - groupHypothalamus_Psilocybin_4weeks) - 
-    (groupHypothalamus_Saline_3hours - groupHypothalamus_Psilocybin_3hours),
-  PFC_Psilocybin_effect_at_3hours = (groupPFC_Saline_3hours - groupPFC_Psilocybin_3hours),
-  PFC_Psilocybin_effect_at_4weeks = (groupPFC_Saline_4weeks - groupPFC_Psilocybin_4weeks),
+  Hyp_Interaction = (groupHypothalamus_Psilocybin_4weeks - groupHypothalamus_Saline_4weeks) - 
+    (groupHypothalamus_Psilocybin_3hours - groupHypothalamus_Saline_3hours),
+  PFC_Psilocybin_effect_at_3hours = (groupPFC_Psilocybin_3hours - groupPFC_Saline_3hours),
+  PFC_Psilocybin_effect_at_4weeks = (groupPFC_Psilocybin_4weeks - groupPFC_Saline_4weeks),
   PFC_time_effect_in_saline = (groupPFC_Saline_4weeks - groupPFC_Saline_3hours),
   PFC_time_effect_in_psilocybin = (groupPFC_Psilocybin_4weeks - groupPFC_Psilocybin_3hours),
-  PFC_Interaction = (groupPFC_Saline_4weeks - groupPFC_Psilocybin_4weeks) - 
-    (groupPFC_Saline_3hours - groupPFC_Psilocybin_3hours),
+  PFC_Interaction = (groupPFC_Psilocybin_4weeks - groupPFC_Saline_4weeks) -
+    (groupPFC_Psilocybin_3hours - groupPFC_Saline_3hours),
   levels = v$design
 )
 
@@ -483,17 +487,17 @@ We test gene ontologies of the differential expression results. These
 are also saved to a excel file.
 
 ``` {r ontologies, cache=FALSE, message=FALSE, results='hide'}
-terms <- get_enrichment_terms(org.Mm.eg.db, v$genes$Geneid, min_genes = 5, max_genes = 500)
+#terms <- get_enrichment_terms(org.Mm.eg.db, v$genes$Geneid, min_genes = 5, max_genes = 500)
 
-ontologies <- lapply(terms, run_ontology_tests,
-                     y = v,
-                     contrast_matrix = contrast_matrix,
-                     fun = limma::camera)
+#ontologies <- lapply(terms, run_ontology_tests,
+#                     y = v,
+#                     contrast_matrix = contrast_matrix,
+#                     fun = limma::camera)
 
-writexl::write_xlsx(ontologies$BP, path = here::here("doc/0135_Nicole_ontologies_BP.xlsx"))
-writexl::write_xlsx(ontologies$MF, path = here::here("doc/0135_Nicole_ontologies_MF.xlsx"))
-writexl::write_xlsx(ontologies$CC, path = here::here("doc/0135_Nicole_ontologies_CC.xlsx"))
-writexl::write_xlsx(ontologies$Reactome, path = here::here("doc/0135_Nicole_ontologies_Reactome.xlsx"))
+#writexl::write_xlsx(ontologies$BP, path = here::here("doc/0135_Nicole_ontologies_BP.xlsx"))
+#writexl::write_xlsx(ontologies$MF, path = here::here("doc/0135_Nicole_ontologies_MF.xlsx"))
+#writexl::write_xlsx(ontologies$CC, path = here::here("doc/0135_Nicole_ontologies_CC.xlsx"))
+#writexl::write_xlsx(ontologies$Reactome, path = here::here("doc/0135_Nicole_ontologies_Reactome.xlsx"))
 ```
 
 ## Volcanoplots
@@ -526,7 +530,7 @@ plot_fn <- function(pD){
     xlab(expression(paste(log[2], "(Fold Change)"))) +
     scale_x_continuous(limits = c(minLogFc, maxLogFc)) +
     scale_y_continuous(limits = c(maxPval, minPval)) +
-    guides(colour = FALSE) +
+    guides(colour = "none") +
     theme_bw()
 }
 
